@@ -21,43 +21,44 @@ STOP_ROUTES = {
     "621S":  ["4", "5"],
 }
 
-def get_feed_url(routes):
-    for r in routes:
-        if r in FEEDS:
-            return FEEDS[r]
-    return None
-
 def fetch_minutes(stop_id, routes):
-    url = get_feed_url(routes)
-    if not url:
-        return []
-
-    try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"Feed fetch error: {e}")
-        return []
-
-    feed = gtfs_realtime_pb2.FeedMessage()
-    feed.ParseFromString(resp.content)
-
+    # Get unique feed URLs needed for these routes
+    feed_urls = list(set(FEEDS[r] for r in routes if r in FEEDS))
     now = time.time()
     minutes = []
 
-    for entity in feed.entity:
-        if not entity.HasField("trip_update"):
+    for url in feed_urls:
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+        except Exception as e:
+            print(f"Feed fetch error for {url}: {e}")
             continue
-        route = entity.trip_update.trip.route_id
-        if route not in routes:
+
+        try:
+            feed = gtfs_realtime_pb2.FeedMessage()
+            feed.ParseFromString(resp.content)
+        except Exception as e:
+            print(f"Protobuf parse error: {e}")
             continue
-        for stu in entity.trip_update.stop_time_update:
-            if stu.stop_id == stop_id:
-                t = stu.arrival.time or stu.departure.time
-                if t and t > now:
-                    m = int((t - now) / 60)
-                    if 0 <= m <= 60:
-                        minutes.append(m)
+
+        for entity in feed.entity:
+            if not entity.HasField("trip_update"):
+                continue
+            route = entity.trip_update.trip.route_id
+            if route not in routes:
+                continue
+            for stu in entity.trip_update.stop_time_update:
+                if stu.stop_id == stop_id:
+                    t = 0
+                    if stu.arrival.time:
+                        t = stu.arrival.time
+                    elif stu.departure.time:
+                        t = stu.departure.time
+                    if t and t > now:
+                        m = int((t - now) / 60)
+                        if 0 <= m <= 60:
+                            minutes.append(m)
 
     minutes.sort()
     return minutes[:3]
@@ -67,8 +68,12 @@ def arrivals(stop_id):
     routes = STOP_ROUTES.get(stop_id)
     if not routes:
         return jsonify({"error": "Unknown stop"}), 404
-    mins = fetch_minutes(stop_id, routes)
-    return jsonify({"stop": stop_id, "minutes": mins})
+    try:
+        mins = fetch_minutes(stop_id, routes)
+        return jsonify({"stop": stop_id, "minutes": mins})
+    except Exception as e:
+        print(f"Error fetching {stop_id}: {e}")
+        return jsonify({"stop": stop_id, "minutes": [], "error": str(e)}), 200
 
 @app.route("/")
 def index():
