@@ -4,6 +4,8 @@ import gzip
 from flask import Flask, jsonify
 from google.transit import gtfs_realtime_pb2
 import requests
+from datetime import timezone
+import datetime
 
 app = Flask(__name__)
 
@@ -23,7 +25,7 @@ FEEDS = {
 
 STOP_ROUTES = {
     "Q04S": ["Q"],
-    "621S":  ["4", "5"],
+    "621S": ["4", "5"],
 }
 
 HEADERS = {
@@ -42,7 +44,8 @@ def parse_feed(url):
     return feed
 
 def fetch_minutes(stop_id, routes):
-    now = time.time()
+    # Use real UTC time from datetime to avoid server clock drift
+    now = datetime.datetime.now(timezone.utc).timestamp()
     minutes = []
     feed_urls = list(set(FEEDS[r] for r in routes if r in FEEDS))
     for url in feed_urls:
@@ -62,7 +65,7 @@ def fetch_minutes(stop_id, routes):
                     t = stu.arrival.time or stu.departure.time
                     if t and t > now:
                         m = int((t - now) / 60)
-                        if 0 <= m <= 60:
+                        if 0 < m <= 60:  # exclude 0 min trains
                             minutes.append(m)
     minutes.sort()
     return minutes[:3]
