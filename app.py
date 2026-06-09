@@ -1,5 +1,6 @@
 import os
 import time
+import gzip
 from flask import Flask, jsonify
 from google.transit import gtfs_realtime_pb2
 import requests
@@ -22,7 +23,6 @@ STOP_ROUTES = {
 }
 
 def fetch_minutes(stop_id, routes):
-    # Get unique feed URLs needed for these routes
     feed_urls = list(set(FEEDS[r] for r in routes if r in FEEDS))
     now = time.time()
     minutes = []
@@ -36,8 +36,13 @@ def fetch_minutes(stop_id, routes):
             continue
 
         try:
+            # Decompress if gzipped
+            content = resp.content
+            if content[:2] == b'\x1f\x8b':
+                content = gzip.decompress(content)
+
             feed = gtfs_realtime_pb2.FeedMessage()
-            feed.ParseFromString(resp.content)
+            feed.ParseFromString(content)
         except Exception as e:
             print(f"Protobuf parse error: {e}")
             continue
