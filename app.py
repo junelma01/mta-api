@@ -7,8 +7,20 @@ import requests
 
 app = Flask(__name__)
 
-# Single combined feed for ALL subway lines — no API key needed
-COMBINED_FEED = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs"
+# Separate feeds per line group
+FEEDS = {
+    "Q": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
+    "N": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
+    "R": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
+    "W": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
+    "4": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "5": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "6": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "1": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "2": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "3": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "7": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+}
 
 STOP_ROUTES = {
     "Q504S": ["Q"],
@@ -19,48 +31,45 @@ HEADERS = {
     "Accept-Encoding": "identity",
 }
 
+def parse_feed(url):
+    """Fetch and parse a GTFS-RT feed, handling gzip if needed."""
+    resp = requests.get(url, timeout=10, headers=HEADERS)
+    resp.raise_for_status()
+    content = resp.content
+    if content[:2] == b'\x1f\x8b':
+        content = gzip.decompress(content)
+    feed = gtfs_realtime_pb2.FeedMessage()
+    feed.ParseFromString(content)
+    print(f"Fetched {url} — {len(feed.entity)} entities")
+    return feed
+
 def fetch_minutes(stop_id, routes):
     now = time.time()
     minutes = []
 
-    try:
-        resp = requests.get(COMBINED_FEED, timeout=10, headers=HEADERS)
-        resp.raise_for_status()
-        print(f"Feed status={resp.status_code} bytes={len(resp.content)}")
-    except Exception as e:
-        print(f"Feed fetch error: {e}")
-        return []
+    # Get unique feed URLs for these routes
+    feed_urls = list(set(FEEDS[r] for r in routes if r in FEEDS))
 
-    try:
-        content = resp.content
-        if content[:2] == b'\x1f\x8b':
-            print("Decompressing gzip...")
-            content = gzip.decompress(content)
-
-        feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(content)
-        print(f"Parsed OK — {len(feed.entity)} entities")
-    except Exception as e:
-        print(f"Protobuf parse error: {e}")
-        return []
-
-    for entity in feed.entity:
-        if not entity.HasField("trip_update"):
+    for url in feed_urls:
+        try:
+            feed = parse_feed(url)
+        except Exception as e:
+            print(f"Feed error {url}: {e}")
             continue
-        route = entity.trip_update.trip.route_id
-        if route not in routes:
-            continue
-        for stu in entity.trip_update.stop_time_update:
-            if stu.stop_id == stop_id:
-                t = 0
-                if stu.arrival.time:
-                    t = stu.arrival.time
-                elif stu.departure.time:
-                    t = stu.departure.time
-                if t and t > now:
-                    m = int((t - now) / 60)
-                    if 0 <= m <= 60:
-                        minutes.append(m)
+
+        for entity in feed.entity:
+            if not entity.HasField("trip_update"):
+                continue
+            route = entity.trip_update.trip.route_id
+            if route not in routes:
+                continue
+            for stu in entity.trip_update.stop_time_update:
+                if stu.stop_id == stop_id:
+                    t = stu.arrival.time or stu.departure.time
+                    if t and t > now:
+                        m = int((t - now) / 60)
+                        if 0 <= m <= 60:
+                            minutes.append(m)
 
     minutes.sort()
     return minutes[:3]
@@ -80,32 +89,30 @@ def arrivals(stop_id):
 @app.route("/debug/<stop_id>")
 def debug(stop_id):
     routes = STOP_ROUTES.get(stop_id, [])
-    try:
-        resp = requests.get(COMBINED_FEED, timeout=10, headers=HEADERS)
-        content = resp.content
-        if content[:2] == b'\x1f\x8b':
-            content = gzip.decompress(content)
-        feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(content)
-        matching = []
-        for entity in feed.entity:
-            if not entity.HasField("trip_update"):
-                continue
-            for stu in entity.trip_update.stop_time_update:
-                if stu.stop_id == stop_id:
-                    matching.append({
-                        "route": entity.trip_update.trip.route_id,
-                        "arrival": stu.arrival.time,
-                        "departure": stu.departure.time,
-                    })
-        return jsonify({
-            "status": resp.status_code,
-            "bytes": len(resp.content),
-            "entities": len(feed.entity),
-            "matches": matching[:10],
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)})
+    feed_urls = list(set(FEEDS[r] for r in routes if r in FEEDS))
+    results = []
+    for url in feed_urls:
+        try:
+            feed = parse_feed(url)
+            matching = []
+            for entity in feed.entity:
+                if not entity.HasField("trip_update"):
+                    continue
+                for stu in entity.trip_update.stop_time_update:
+                    if stu.stop_id == stop_id:
+                        matching.append({
+                            "route": entity.trip_update.trip.route_id,
+                            "arrival": stu.arrival.time,
+                            "departure": stu.departure.time,
+                        })
+            results.append({
+                "url": url,
+                "entities": len(feed.entity),
+                "matches": matching[:10],
+            })
+        except Exception as e:
+            results.append({"url": url, "error": str(e)})
+    return jsonify(results)
 
 @app.route("/")
 def index():
