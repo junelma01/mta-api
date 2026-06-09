@@ -7,7 +7,6 @@ import requests
 
 app = Flask(__name__)
 
-# Separate feeds per line group
 FEEDS = {
     "Q": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
     "N": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
@@ -32,7 +31,6 @@ HEADERS = {
 }
 
 def parse_feed(url):
-    """Fetch and parse a GTFS-RT feed, handling gzip if needed."""
     resp = requests.get(url, timeout=10, headers=HEADERS)
     resp.raise_for_status()
     content = resp.content
@@ -46,17 +44,13 @@ def parse_feed(url):
 def fetch_minutes(stop_id, routes):
     now = time.time()
     minutes = []
-
-    # Get unique feed URLs for these routes
     feed_urls = list(set(FEEDS[r] for r in routes if r in FEEDS))
-
     for url in feed_urls:
         try:
             feed = parse_feed(url)
         except Exception as e:
             print(f"Feed error {url}: {e}")
             continue
-
         for entity in feed.entity:
             if not entity.HasField("trip_update"):
                 continue
@@ -70,7 +64,6 @@ def fetch_minutes(stop_id, routes):
                         m = int((t - now) / 60)
                         if 0 <= m <= 60:
                             minutes.append(m)
-
     minutes.sort()
     return minutes[:3]
 
@@ -113,6 +106,25 @@ def debug(stop_id):
         except Exception as e:
             results.append({"url": url, "error": str(e)})
     return jsonify(results)
+
+@app.route("/stops/<route_id>")
+def stops(route_id):
+    url = FEEDS.get(route_id)
+    if not url:
+        return jsonify({"error": "Unknown route"})
+    try:
+        feed = parse_feed(url)
+        stop_ids = set()
+        for entity in feed.entity:
+            if not entity.HasField("trip_update"):
+                continue
+            if entity.trip_update.trip.route_id != route_id:
+                continue
+            for stu in entity.trip_update.stop_time_update:
+                stop_ids.add(stu.stop_id)
+        return jsonify({"route": route_id, "stops": sorted(stop_ids)})
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 @app.route("/")
 def index():
