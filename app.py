@@ -36,7 +36,6 @@ def fetch_minutes(stop_id, routes):
             continue
 
         try:
-            # Decompress if gzipped
             content = resp.content
             if content[:2] == b'\x1f\x8b':
                 content = gzip.decompress(content)
@@ -79,6 +78,35 @@ def arrivals(stop_id):
     except Exception as e:
         print(f"Error fetching {stop_id}: {e}")
         return jsonify({"stop": stop_id, "minutes": [], "error": str(e)}), 200
+
+@app.route("/debug/<stop_id>")
+def debug(stop_id):
+    routes = STOP_ROUTES.get(stop_id, [])
+    feed_urls = list(set(FEEDS[r] for r in routes if r in FEEDS))
+    results = []
+    for url in feed_urls:
+        try:
+            resp = requests.get(url, timeout=10)
+            content = resp.content
+            if content[:2] == b'\x1f\x8b':
+                content = gzip.decompress(content)
+            feed = gtfs_realtime_pb2.FeedMessage()
+            feed.ParseFromString(content)
+            matching = []
+            for entity in feed.entity:
+                if not entity.HasField("trip_update"):
+                    continue
+                for stu in entity.trip_update.stop_time_update:
+                    if stu.stop_id == stop_id:
+                        matching.append({
+                            "route": entity.trip_update.trip.route_id,
+                            "arrival": stu.arrival.time,
+                            "departure": stu.departure.time,
+                        })
+            results.append({"url": url, "matches": matching[:10]})
+        except Exception as e:
+            results.append({"url": url, "error": str(e)})
+    return jsonify(results)
 
 @app.route("/")
 def index():
