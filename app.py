@@ -4,33 +4,22 @@ import gzip
 from flask import Flask, jsonify
 from google.transit import gtfs_realtime_pb2
 import requests
-from datetime import timezone
-import datetime
+from datetime import datetime, timezone
 
 app = Flask(__name__)
 
 FEEDS = {
     "Q": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
-    "N": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
-    "R": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
-    "W": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
     "4": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
     "5": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
-    "6": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
-    "1": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
-    "2": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
-    "3": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
-    "7": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
 }
 
 STOP_ROUTES = {
     "Q04S": ["Q"],
-    "621S": ["4", "5"],
+    "621S":  ["4"],
 }
 
-HEADERS = {
-    "Accept-Encoding": "identity",
-}
+HEADERS = {"Accept-Encoding": "identity"}
 
 def parse_feed(url):
     resp = requests.get(url, timeout=10, headers=HEADERS)
@@ -44,8 +33,7 @@ def parse_feed(url):
     return feed
 
 def fetch_minutes(stop_id, routes):
-    # Use real UTC time from datetime to avoid server clock drift
-    now = datetime.datetime.now(timezone.utc).timestamp()
+    now = datetime.now(timezone.utc).timestamp()
     minutes = []
     feed_urls = list(set(FEEDS[r] for r in routes if r in FEEDS))
     for url in feed_urls:
@@ -65,7 +53,7 @@ def fetch_minutes(stop_id, routes):
                     t = stu.arrival.time or stu.departure.time
                     if t and t > now:
                         m = int((t - now) / 60)
-                        if 0 < m <= 60:  # exclude 0 min trains
+                        if 0 < m <= 60:
                             minutes.append(m)
     minutes.sort()
     return minutes[:3]
@@ -81,34 +69,6 @@ def arrivals(stop_id):
     except Exception as e:
         print(f"Error fetching {stop_id}: {e}")
         return jsonify({"stop": stop_id, "minutes": [], "error": str(e)}), 200
-
-@app.route("/debug/<stop_id>")
-def debug(stop_id):
-    routes = STOP_ROUTES.get(stop_id, [])
-    feed_urls = list(set(FEEDS[r] for r in routes if r in FEEDS))
-    results = []
-    for url in feed_urls:
-        try:
-            feed = parse_feed(url)
-            matching = []
-            for entity in feed.entity:
-                if not entity.HasField("trip_update"):
-                    continue
-                for stu in entity.trip_update.stop_time_update:
-                    if stu.stop_id == stop_id:
-                        matching.append({
-                            "route": entity.trip_update.trip.route_id,
-                            "arrival": stu.arrival.time,
-                            "departure": stu.departure.time,
-                        })
-            results.append({
-                "url": url,
-                "entities": len(feed.entity),
-                "matches": matching[:10],
-            })
-        except Exception as e:
-            results.append({"url": url, "error": str(e)})
-    return jsonify(results)
 
 @app.route("/stops/<route_id>")
 def stops(route_id):
